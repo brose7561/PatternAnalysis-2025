@@ -72,9 +72,12 @@ class UNet3D(nn.Module):
     def _init(self, m):
         if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
             nn.init.kaiming_normal_(m.weight, nonlinearity='leaky_relu')
-        if isinstance(m, (nn.InstanceNorm3d, nn.BatchNorm3d)):
-            nn.init.ones_(m.weight)
-            nn.init.zeros_(m.bias)
+        elif isinstance(m, (nn.InstanceNorm3d, nn.BatchNorm3d)):
+            if hasattr(m, 'weight') and m.weight is not None:
+                nn.init.ones_(m.weight)
+            if hasattr(m, 'bias') and m.bias is not None:
+                nn.init.zeros_(m.bias)
+
 
     def forward(self, x):
         skips = []

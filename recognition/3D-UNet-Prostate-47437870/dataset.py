@@ -1,4 +1,3 @@
-# dataset.py
 import os
 import glob
 import numpy as np
@@ -8,14 +7,24 @@ import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from scipy.ndimage import zoom
 import random
+import logging
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/dataset.log",
+    filemode="a",
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO
+)
 
 def _stem(p):
     b = os.path.basename(p)
     if b.endswith('.nii.gz'):
-        return b[:-7]
-    if b.endswith('.nii'):
-        return b[:-4]
-    return os.path.splitext(b)[0]
+        b = b[:-7]
+    elif b.endswith('.nii'):
+        b = b[:-4]
+    b = b.replace('_LFOV', '').replace('_SEMANTIC', '')
+    return b
 
 def _pair_images_labels(image_dir, label_dir) -> List[Tuple[str, str]]:
     imgs = sorted(glob.glob(os.path.join(image_dir, '*.nii')) + glob.glob(os.path.join(image_dir, '*.nii.gz')))
@@ -26,6 +35,7 @@ def _pair_images_labels(image_dir, label_dir) -> List[Tuple[str, str]]:
         k = _stem(ip)
         if k in lab_map:
             pairs.append((ip, lab_map[k]))
+    logging.info(f"Paired {len(pairs)} images with labels from {len(imgs)} images and {len(labs)} labels.")
     return pairs
 
 def _resize_vol(vol, out_shape, order):
@@ -41,6 +51,7 @@ class HipMRI3DDataset(Dataset):
         self.spatial_size = spatial_size
         self.augment = augment
         random.seed(seed)
+        logging.info(f"Dataset initialized with {len(self.items)} paired samples. Augment={self.augment}")
 
     def __len__(self):
         return len(self.items)
@@ -82,6 +93,7 @@ class HipMRI3DDataset(Dataset):
         img = np.expand_dims(img, 0)
         img_t = torch.from_numpy(img.copy()).float()
         lab_t = torch.from_numpy(lab.copy()).long()
+        logging.debug(f"Loaded sample {idx}: img {img_t.shape}, label {lab_t.shape}")
         return {"image": img_t, "label": lab_t, "image_path": img_p, "label_path": lab_p}
 
 def make_loaders(image_dir,
@@ -99,11 +111,12 @@ def make_loaders(image_dir,
     n_val = int(round(n * val_split))
     n_train = n - n_val - n_test
     gen = torch.Generator().manual_seed(seed)
+    logging.info(f"Dataset split sizes: train={n_train}, val={n_val}, test={n_test}")
     train_ds, val_ds, test_ds = random_split(full, [n_train, n_val, n_test], generator=gen)
-    # no augmentation leakage
     val_ds.dataset.augment = False
     test_ds.dataset.augment = False
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=num_workers, pin_memory=True)
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=num_workers, pin_memory=True)
+    logging.info("DataLoaders created successfully.")
     return train_loader, val_loader, test_loader

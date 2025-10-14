@@ -1,7 +1,7 @@
-# train.py
 import os
 import argparse
 import math
+import logging
 from pathlib import Path
 import torch
 from torch.optim import AdamW
@@ -10,6 +10,14 @@ from tqdm import tqdm
 from modules import UNet3D
 from dataset import make_loaders
 from utils import to_device, per_class_dice_from_logits, ce_dice_loss, save_curves
+
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/train.log",
+    filemode="a",
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO
+)
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -51,6 +59,7 @@ def main():
     best_val = math.inf
     history = {'train_loss': [], 'val_loss': [], 'val_dice': []}
 
+    logging.info(f"Starting training for {args.epochs} epochs on device {device}.")
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_loss = 0.0
@@ -62,7 +71,8 @@ def main():
             with torch.cuda.amp.autocast(enabled=(device.type == 'cuda')):
                 logits = model(imgs)
                 loss = ce_dice_loss(logits, labs, dice_ignore_index=args.ignore_index, dice_weight=1.0, ce_weight_scale=1.0)
-            scaler.scale(loss).step(optimizer)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
             scaler.update()
             train_loss += loss.item()
             pbar.set_postfix(loss=f'{loss.item():.4f}')
@@ -92,12 +102,14 @@ def main():
             best_val = val_loss
             torch.save({'model': model.state_dict(),
                         'args': vars(args)}, ckpt_path)
+            logging.info(f"New best model saved at epoch {epoch} with val_loss={val_loss:.4f}")
 
-        print(f'epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_mean_dice={mean_val_dice:.4f}')
+        log_msg = f'epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} val_mean_dice={mean_val_dice:.4f}'
+        print(log_msg)
+        logging.info(log_msg)
 
         save_curves(history, args.outdir)
 
-    # test evaluation
     best = torch.load(Path(args.outdir) / 'best.pt', map_location=device)
     model.load_state_dict(best['model'])
     model.eval()
@@ -112,8 +124,11 @@ def main():
     if dices_per_class:
         d_all = torch.nanmean(torch.cat(dices_per_class, dim=0), dim=0)
         for c, val in enumerate(d_all.tolist()):
+            logging.info(f'class_{c}_dice={val:.4f}')
             print(f'class_{c}_dice={val:.4f}')
-        print(f'mean_dice_ex_bg={torch.nanmean(d_all).item():.4f}')
+        mean_dice = torch.nanmean(d_all).item()
+        logging.info(f'mean_dice_ex_bg={mean_dice:.4f}')
+        print(f'mean_dice_ex_bg={mean_dice:.4f}')
 
 if __name__ == '__main__':
     main()
