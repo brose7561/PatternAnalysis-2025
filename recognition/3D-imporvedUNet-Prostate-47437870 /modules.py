@@ -4,43 +4,55 @@ from torch import nn
 import torch.nn.functional as F
 
 
+class DyReLU3d(nn.Module):
+    """
+    Dynamic ReLU (Dy-ReLU) for 3D tensors.
+    Generates per-channel piecewise-linear parameters conditioned on global context.
+    Implements K=2 linear pieces: y = max_k (a_k * x + b_k).
+    """
+    def __init__(self, channels: int, reduction: int = 16, K: int = 2):
+        super().__init__()
+        self.C = channels
+        self.K = K
+        hidden = max(channels // reduction, 4)
+        self.pool = nn.AdaptiveAvgPool3d(1)
+        self.fc1 = nn.Linear(channels, hidden)
+        self.fc2 = nn.Linear(hidden, 2 * K * channels)
+        self.register_parameter("alpha", nn.Parameter(torch.ones(K)))
+        self.register_parameter("beta", nn.Parameter(torch.zeros(K)))
+        self.register_parameter("lambda_a", nn.Parameter(torch.tensor(0.5)))
+        self.register_parameter("lambda_b", nn.Parameter(torch.tensor(0.5)))
+
+    def forward(self, x):
+        n, c, d, h, w = x.shape
+        g = self.pool(x).view(n, c)
+        g = F.relu(self.fc1(g), inplace=True)
+        params = torch.sigmoid(self.fc2(g))
+        a, b = torch.split(params, self.K * self.C, dim=1)
+        a = a.view(n, self.K, self.C, 1, 1, 1)
+        b = b.view(n, self.K, self.C, 1, 1, 1)
+        a = self.alpha.view(1, self.K, 1, 1, 1, 1) + self.lambda_a * (a - 0.5)
+        b = self.beta.view(1, self.K, 1, 1, 1, 1) + self.lambda_b * (b - 0.5)
+        x_exp = x.unsqueeze(1)
+        out = (a * x_exp + b).max(dim=1).values
+        return out
+
+
 class FRN3d(nn.Module):
-    """
-    Filter Response Normalization (FRN) for 3D tensors.
-    Normalizes across spatial and channel dimensions within a single sample (batch-size independent).
-    """
+    """Filter Response Normalization (FRN) for 3D tensors."""
     def __init__(self, num_features: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
-        # Gamma and Beta (learnable scale and shift)
         self.weight = nn.Parameter(torch.ones(1, num_features, 1, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, num_features, 1, 1, 1))
     
     def forward(self, x):
-        # Compute the mean of the squared feature map (across spatial dimensions)
-        # Dimensions are [N, C, D, H, W] -> sum/mean over D, H, W
         nu2 = torch.mean(x * x, dim=[2, 3, 4], keepdim=True)
-        # Normalize: x / sqrt(E[x^2] + eps)
         x = x * torch.rsqrt(nu2 + self.eps)
-        # Scale and Shift: Gamma * x + Beta
         return x * self.weight + self.bias
 
 
-class TLU3d(nn.Module):
-    """
-    Thresholded Linear Unit (TLU) for 3D tensors.
-    Used in conjunction with FRN. TLU has a learnable bias (tau) 
-    to shift the activation function, preventing the features from vanishing.
-    """
-    def __init__(self, num_features: int):
-        super().__init__()
-        # Tau (learnable threshold)
-        self.tau = nn.Parameter(torch.zeros(1, num_features, 1, 1, 1))
-
-    def forward(self, x):
-        # TLU: max(x, tau)
-        return torch.max(x, self.tau)
-
+# TLU3d is removed as it's being replaced by DyReLU3d in the block
 
 
 class ChannelAttention3d(nn.Module):
@@ -93,20 +105,18 @@ class CBAM3d(nn.Module):
 
 class ImprovedResidualBlock3d(nn.Module):
     """
-    Improved Stage Residual Block: FRN -> TLU -> 3x3 -> FRN -> TLU -> 3x3 with identity mapping.
-    This replaces the original BN+DyReLU for batch-size independence.
+    Improved Stage Residual Block: FRN -> DyReLU -> 3x3 -> FRN -> DyReLU -> 3x3 with identity mapping.
+    Combines batch-independent FRN with the strong DyReLU activation.
     """
     def __init__(self, in_ch: int, out_ch: int, dropout_p: float = 0.0):
         super().__init__()
         
-        # FRN and TLU replacement
         self.norm1 = FRN3d(in_ch)
-        self.act1 = TLU3d(in_ch) 
+        self.act1 = DyReLU3d(in_ch) 
         self.conv1 = nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1, bias=False)
 
-        # FRN and TLU replacement
         self.norm2 = FRN3d(out_ch)
-        self.act2 = TLU3d(out_ch)
+        self.act2 = DyReLU3d(out_ch)
         self.conv2 = nn.Conv3d(out_ch, out_ch, kernel_size=3, padding=1, bias=False)
 
         self.drop = nn.Dropout3d(p=dropout_p) if dropout_p > 0 else nn.Identity()
@@ -115,7 +125,6 @@ class ImprovedResidualBlock3d(nn.Module):
     def forward(self, x):
         identity = self.proj(x)
         
-        # Forward pass using FRN -> TLU
         out = self.conv1(self.act1(self.norm1(x)))
         out = self.drop(out)
         out = self.conv2(self.act2(self.norm2(out)))
@@ -124,12 +133,10 @@ class ImprovedResidualBlock3d(nn.Module):
         return out
 
 
-
 class DownStage3d(nn.Module):
     """Encoder stage: improved residual block followed by 2x downsampling via max pooling."""
     def __init__(self, in_ch: int, out_ch: int, dropout_p: float = 0.0):
         super().__init__()
-        # Uses the new ImprovedResidualBlock3d with FRN/TLU
         self.block = ImprovedResidualBlock3d(in_ch, out_ch, dropout_p=dropout_p)
         self.pool = nn.MaxPool3d(kernel_size=2, stride=2)
 
@@ -145,7 +152,6 @@ class UpStage3d(nn.Module):
         super().__init__()
         self.up = nn.ConvTranspose3d(in_ch, out_ch, kernel_size=2, stride=2, bias=False)
         self.cbam = CBAM3d(skip_ch, reduction=cbam_reduction)
-        # Note: The input to the block is (out_ch + skip_ch) after concatenation
         self.block = ImprovedResidualBlock3d(out_ch + skip_ch, out_ch, dropout_p=dropout_p)
 
     def forward(self, x, skip):
@@ -163,29 +169,22 @@ class UpStage3d(nn.Module):
         return self.block(x)
 
 
-
 class UNet3DImproved(nn.Module):
     """
-    IResUnet3+ 3D Architecture:
-    - Stage Residual Encoder/Decoder Blocks using FRN and TLU
-    - CBAM applied to skip features before fusion
-    - Standard U-Net skip connections (concatenation)
+    IResUnet3+ 3D Architecture with FRN-DyReLU Residual Blocks.
     """
     def __init__(self, in_channels: int = 1, num_classes: int = 6, base_ch: int = 16, depth: int = 4, dropout_p: float = 0.0):
         super().__init__()
         chs = [base_ch * (2 ** i) for i in range(depth)]
         
-        # Encoder (Contracting Path)
         self.enc = nn.ModuleList()
         prev = in_channels
         for c in chs:
             self.enc.append(DownStage3d(prev, c, dropout_p=dropout_p))
             prev = c
 
-        # Bridge (Bottleneck)
         self.bridge = ImprovedResidualBlock3d(chs[-1], chs[-1] * 2, dropout_p=dropout_p)
         
-        # Decoder (Expanding Path)
         dec = []
         in_ch = chs[-1] * 2
         for skip_c in reversed(chs):
@@ -194,25 +193,18 @@ class UNet3DImproved(nn.Module):
             in_ch = out_c
         self.dec = nn.ModuleList(dec)
         
-        # Final Output Head
         self.head = nn.Conv3d(chs[0], num_classes, kernel_size=1, bias=True)
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
-            # Initializing with Kaiming Normal (He initialization)
             nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
         elif isinstance(m, (FRN3d,)):
-            # FRN weight (Gamma) to ones, bias (Beta) to zeros
             if m.weight is not None:
                 nn.init.ones_(m.weight)
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
-        elif isinstance(m, (TLU3d,)):
-            # TLU bias (Tau) to zeros
-            if m.tau is not None:
-                nn.init.zeros_(m.tau)
         elif isinstance(m, (nn.Linear,)):
             nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
             if m.bias is not None:
@@ -224,17 +216,13 @@ class UNet3DImproved(nn.Module):
         skips = []
         out = x
         
-        # Encoder
         for stage in self.enc:
             feat, out = stage(out)
             skips.append(feat)
             
-        # Bridge
         out = self.bridge(out)
         
-        # Decoder
         for stage, skip in zip(self.dec, reversed(skips)):
             out = stage(out, skip)
             
-        # Head
         return self.head(out)
