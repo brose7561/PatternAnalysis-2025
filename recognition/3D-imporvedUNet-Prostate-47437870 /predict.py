@@ -1,4 +1,5 @@
-# Author: Benjamin Rose, 2025
+# © Benjamin Rose, 2025
+# please see attached licence - MIT
 # Description: 3D MRI segmentation inference script using Improved UNet3D.
 # Loads a trained checkpoint, runs inference on NIfTI volumes, saves NIfTI + GIF outputs,
 # and computes Dice metrics if ground truth labels are provided.
