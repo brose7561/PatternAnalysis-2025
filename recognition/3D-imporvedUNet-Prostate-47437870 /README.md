@@ -16,6 +16,8 @@ This repository trains and evaluates an **Improved UNet3D** for 3D prostate MRI 
 ## How It Works (Short)
 
 * **Backbone:** 3D U-Net encoder–decoder with skip connections. 
+
+
 * **Blocks:** Residual blocks with `BatchNorm3d → DyReLU3d → Conv3d` ×2 (+ identity).
 * **Attention:** **CBAM3d** (channel then spatial attention) applied to **skip features** before decoding.
 * **Head:** 1×1×1 conv to class logits.
@@ -68,7 +70,7 @@ pictures/      # figures and GIFs used in this README
 
 7 scans for 5 epochs. 
 
-**Local test -— early scatter and scared me:**
+**Local test -— note scatter:**
 ![](pictures/first_Local.gif)
 
 The scatter was not present when using the orrigional unet in the same conditions. 
@@ -87,11 +89,13 @@ In the end i returned to the orrigional batchnorm, combo and trained against the
 
 > **Why 10 epochs?** The task requires **DSC ≥ 0.70** across foreground classes. Training substantially longer is a great project extionsion, but would waste resourses in the context of this projects requirments.  
 
+**Dice values:**
+![](pictures/final_training_dice.png)
 
-
+**Dice curve:**
 ![](pictures/dice.png)
 
-
+**Loss Curves:**
 ![](pictures/loss.png)
 
 ---
