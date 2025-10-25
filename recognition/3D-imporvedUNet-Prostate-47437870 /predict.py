@@ -1,3 +1,8 @@
+# Author: Benjamin Rose, 2025
+# Description: 3D MRI segmentation inference script using Improved UNet3D.
+# Loads a trained checkpoint, runs inference on NIfTI volumes, saves NIfTI + GIF outputs,
+# and computes Dice metrics if ground truth labels are provided.
+
 import argparse
 import os
 import logging
@@ -14,6 +19,7 @@ from modules import UNet3DImproved
 from utils import to_device, per_class_dice_from_logits
 from dataset import _resize_vol
 
+# Ensure logs directory exists and configure file logging
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     filename="logs/predict.log",
@@ -23,6 +29,7 @@ logging.basicConfig(
 )
 
 def parse_args():
+    """Parse command-line arguments for model inference."""
     p = argparse.ArgumentParser()
     p.add_argument('--image_path', type=str, required=True)
     p.add_argument('--label_path', type=str, default=None)
@@ -35,15 +42,18 @@ def parse_args():
     return p.parse_args()
 
 def load_nifti(path):
+    """Load a NIfTI image using nibabel."""
     return nib.load(path)
 
 def resolve_class_names(num_classes, ckpt_args):
+    """Recover class names from checkpoint metadata or generate defaults."""
     names = ckpt_args.get('class_names', None)
     if isinstance(names, (list, tuple)) and len(names) == num_classes:
         return [str(x) for x in names]
     return [f"class {i}" for i in range(num_classes)]
 
 def load_model(checkpoint_path, device, num_classes):
+    """Load trained UNet3DImproved model and its configuration."""
     ckpt = torch.load(checkpoint_path, map_location=device)
     margs = ckpt.get('args', {})
     model = UNet3DImproved(
@@ -58,9 +68,11 @@ def load_model(checkpoint_path, device, num_classes):
     return model, margs
 
 def normalize_image(img):
+    """Z-score normalize a 3D image volume."""
     return (img - img.mean()) / (img.std() + 1e-8)
 
 def run_inference(model, img, device, spatial_size):
+    """Resize image, run model inference, and return softmax + prediction maps."""
     img_rs = _resize_vol(img, tuple(spatial_size[::-1]), order=1)
     tens = torch.from_numpy(img_rs[None, None, ...]).float().to(device)
     with torch.no_grad():
@@ -70,12 +82,14 @@ def run_inference(model, img, device, spatial_size):
     return img_rs, pred, logits
 
 def build_discrete_cmap(num_classes):
+    """Create a consistent discrete colormap for visualising segmentation."""
     cmap = plt.cm.get_cmap('tab20', num_classes)
     bounds = np.arange(num_classes + 1) - 0.5
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
     return cmap, norm
 
 def legend_handles(present_classes, cmap, norm, class_names):
+    """Generate legend entries for each visible class."""
     handles = []
     for cid in sorted(present_classes):
         color = cmap(norm(cid))
@@ -83,28 +97,25 @@ def legend_handles(present_classes, cmap, norm, class_names):
     return handles
 
 def frame_image(img_rs, pred_slice, label_slice, cmap, norm, class_names, present_classes):
+    """Render a triptych (image, prediction, label) for a single slice."""
     fig, axes = plt.subplots(1, 3, figsize=(12, 5), constrained_layout=False)
-    axes[0].imshow(img_rs, cmap='gray')
-    axes[0].set_title('image')
-    axes[0].axis('off')
+    axes[0].imshow(img_rs, cmap='gray'); axes[0].set_title('image'); axes[0].axis('off')
     axes[1].imshow(pred_slice, cmap=cmap, norm=norm, interpolation='nearest')
-    axes[1].set_title('pred')
-    axes[1].axis('off')
+    axes[1].set_title('pred'); axes[1].axis('off')
     if label_slice is not None:
         axes[2].imshow(label_slice, cmap=cmap, norm=norm, interpolation='nearest')
         axes[2].set_title('label')
-        axes[2].axis('off')
-    else:
-        axes[2].axis('off')
+    axes[2].axis('off')
+
+    # Add legend only once, aligned under all three subplots
     fig.subplots_adjust(bottom=0.22)
     fig.legend(
         handles=legend_handles(present_classes, cmap, norm, class_names),
-        loc='lower center',
-        bbox_to_anchor=(0.5, 0.02),
-        ncol=min(len(present_classes), 6),
-        frameon=False,
-        fontsize=8
+        loc='lower center', bbox_to_anchor=(0.5, 0.02),
+        ncol=min(len(present_classes), 6), frameon=False, fontsize=8
     )
+
+    # Save rendered figure to memory buffer (to combine into GIF)
     buf = io.BytesIO()
     plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
     plt.close(fig)
@@ -114,21 +125,26 @@ def frame_image(img_rs, pred_slice, label_slice, cmap, norm, class_names, presen
     return arr
 
 def make_triptych_gif(img_vol, pred_vol, label_vol, num_classes, class_names, out_path, fps):
+    """Generate an animated GIF visualising slice-by-slice segmentation."""
     cmap, norm = build_discrete_cmap(num_classes)
     present = set(np.unique(pred_vol))
     if label_vol is not None:
         present |= set(np.unique(label_vol))
     frames = []
     Z = img_vol.shape[2]
+
+    # Build one frame per axial slice
     for k in range(Z):
         g = img_vol[:, :, k]
         ps = pred_vol[:, :, k]
         ls = label_vol[:, :, k] if label_vol is not None else None
         frame = frame_image(g, ps, ls, cmap, norm, class_names, present)
         frames.append(frame)
+
     imageio.mimsave(out_path, frames, fps=fps, loop=0)
 
 def compute_dice(logits, gt_rs, device, num_classes, ignore_index):
+    """Compute and log per-class Dice coefficients."""
     gt_t = torch.from_numpy(gt_rs[None, ...]).long().to(device)
     with torch.no_grad():
         d = per_class_dice_from_logits(logits, gt_t, num_classes=num_classes, ignore_index=ignore_index)
@@ -141,30 +157,46 @@ def compute_dice(logits, gt_rs, device, num_classes, ignore_index):
     logging.info(f"mean_dice_ex_bg={mean_dice:.4f}")
 
 def save_nifti_like(src_img, data, out_path):
+    """Save array as a NIfTI file with the same affine/header as the source image."""
     nib.save(nib.Nifti1Image(data.astype(np.int16), src_img.affine, src_img.header), out_path)
 
 def main():
+    """Run full prediction pipeline: load, infer, visualise, and save outputs."""
     args = parse_args()
     device = to_device()
     os.makedirs(args.outdir, exist_ok=True)
+
+    # Load trained model and metadata
     model, margs = load_model(args.checkpoint, device, args.num_classes)
     class_names = resolve_class_names(args.num_classes, margs)
+
+    # Load and normalize input image
     src_img = load_nifti(args.image_path)
     img = normalize_image(src_img.get_fdata().astype(np.float32))
+
+    # Run inference on resized image
     img_rs, pred, logits = run_inference(model, img, device, args.spatial_size)
+
+    # Optional: load ground truth if provided
     label_rs = None
     if args.label_path:
         gt = load_nifti(args.label_path).get_fdata().astype(np.int16)
         label_rs = _resize_vol(gt, tuple(args.spatial_size[::-1]), order=0)
+
+    # Build output paths (same stem as input)
     out_base = Path(args.outdir) / Path(args.image_path).stem
     gif_path = out_base.with_suffix('').as_posix() + "_triptych.gif"
     nii_path = out_base.with_suffix('').as_posix() + "_pred.nii.gz"
+
+    # Save visualisation and predicted volume
     make_triptych_gif(img_rs, pred, label_rs, args.num_classes, class_names, gif_path, args.gif_fps)
     save_nifti_like(src_img, pred, nii_path)
     print(f"saved {gif_path}")
     print(f"saved {nii_path}")
     logging.info(f"saved {gif_path}")
     logging.info(f"saved {nii_path}")
+
+    # Evaluate segmentation if ground truth available
     if label_rs is not None:
         compute_dice(logits, label_rs, device, args.num_classes, args.ignore_index)
 
