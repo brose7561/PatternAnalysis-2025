@@ -83,19 +83,19 @@ Worried about the scatter i branched out and used FRN and TLU after finding simi
 **Full-data cluster run (10 epochs) — qualitative convergence:**
 ![](pictures/full_data_10_epochs.gif)
 
-In the end i returned to the orrigional batchnorm, combo and trained against the full dataset.note the outline segmentation is worse. 
+In the end i returned to the orrigional batchnorm, combo and trained against the full dataset. 
 
-# Training
+# Training Results
 
-> **Why 10 epochs?** The task requires **DSC ≥ 0.70** across foreground classes. Training substantially longer is a great project extionsion, but would waste resourses in the context of this projects requirments.  
+> **Why 10 epochs?** The task requires **DSC ≥ 0.70** across foreground classes. Training substantially longer is a great project extension, but would waste resourses in the context of this projects requirments.  
 
 **Dice values:**
 ![](pictures/final_training_dice.png)
 
-**Dice curve:**
+**Dice Curve:**
 ![](pictures/dice.png)
 
-**Loss Curves:**
+**Loss Curve:**
 ![](pictures/loss.png)
 
 ---
@@ -106,21 +106,11 @@ In the end i returned to the orrigional batchnorm, combo and trained against the
 
 ```bash
 # Python 3.10+ recommended
+python -m venv .venv
+source .venv/bin/activate #for mac
 pip install -r requirements.txt
 ```
 
-**Dependencies (with tested versions)**
-
-```
-torch>=2.2.0
-numpy>=1.24.0
-nibabel>=5.2.0
-scipy>=1.11.0
-matplotlib>=3.8.0
-tqdm>=4.66.0
-scikit-learn>=1.3.0
-imageio>=2.34.0
-```
 
 ### 2) Data
 
@@ -138,18 +128,24 @@ Organize the downsampled **HipMRI / Prostate** data as:
 python train.py \
   --image_dir /path/to/images \
   --label_dir /path/to/labels \
-  --spatial_size 128 128 64 \
-  --epochs 10 \
-  --batch_size 1 \
+  --spatial_size <int int int> \
+  --epochs <int> \
+  --batch_size <int> \
   --lr 4e-4 \
-  --num_workers 4 \
-  --num_classes 6 \
-  --ignore_index 0 \
+  --num_workers <int> \
+  --num_classes <int> \
+  --ignore_index <int> \
   --outdir runs_improved_unet3d \
   --augment            # optional: enable simple flips/rot90
 ```
+#### running UQ Rangpur is default just run:
+```bash
+python train.py \
+  --num_workers 1 \
+  --epochs 10
+```
 
-During training, curves are saved to:
+#### During training, curves are saved to:
 
 ```
 runs_improved_unet3d/loss.png
@@ -164,61 +160,40 @@ python predict.py \
   --image_path /path/to/test_volume.nii.gz \
   --label_path /path/to/test_label.nii.gz \   # optional, enables per-class Dice
   --checkpoint runs_improved_unet3d/best.pt \
-  --num_classes 6 \
-  --ignore_index 0 \
-  --spatial_size 128 128 64 \
+  --num_classes <int> \
+  --ignore_index <int> \
+  --spatial_size <int> <int> <int> \
   --outdir pred_outputs \
-  --gif_fps 10
+  --gif_fps <int>
 ```
 
-This writes:
+#### Default example:
+
+```bash
+python predict.py \
+--image_path ./testdata/semantic_MRs/B006_Week0_LFOV.nii.gz \
+--label_path ./testdata/semantic_labels_only/B006_Week0_SEMANTIC.nii.gz \
+--checkpoint ./runs_localtest/best.pt
+
+```
+
+#### This writes:
 
 ```
 pred_outputs/test_volume_triptych.gif   # image | prediction | (optional) label
 pred_outputs/test_volume_pred.nii.gz    # predicted labelmap
 ```
 
----
 
-## Example I/O
-
-**Example input (CLI):**
-
-```bash
-python predict.py \
-  --image_path testdata/case_00012.nii.gz \
-  --checkpoint runs_improved_unet3d/best.pt \
-  --num_classes 6
-```
-
-**Example output (console):**
-
-```
-saved pred_outputs/case_00012_triptych.gif
-saved pred_outputs/case_00012_pred.nii.gz
-class_1_dice=0.78
-class_2_dice=0.74
-class_3_dice=0.73
-class_4_dice=0.71
-class_5_dice=0.72
-mean_dice_ex_bg=0.7365
-```
-
-**Example plot artifacts:**
-
-* `runs_improved_unet3d/loss.png` — train vs. val loss
-* `runs_improved_unet3d/dice.png` — mean validation Dice over epochs
-
-*(Numbers above are illustrative of the expected range after ~10 epochs; actual results vary by seed and split.)*
-
----
 
 ## Pre-processing & Augmentation
 
 * **Z-score normalization** per-volume:
-  [
-  x' = \frac{x - \mu}{\sigma + 1e!-!8}
-  ]
+
+[
+x' = \frac{x - \mu}{\sigma + 1e!-!8}
+]
+
 * **Resizing** to `spatial_size` (default **128×128×64**):
 
   * Images: **trilinear** interpolation
