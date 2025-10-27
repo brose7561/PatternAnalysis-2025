@@ -3,3 +3,5 @@
 logs
 runs_**
 pred_outputs
+setup.txt
+testdata

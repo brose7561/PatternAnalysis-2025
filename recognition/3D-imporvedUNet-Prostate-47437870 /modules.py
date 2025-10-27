@@ -1,3 +1,17 @@
+"""
+modules.py — Core network components for the 3D Improved U-Net model.
+
+Includes:
+- DyReLU3d: Dynamic activation
+- CBAM3d: Channel & spatial attention
+- ImprovedResidualBlock3d: Enhanced ResNet-style blocks
+- Encoder/Decoder stages and UNet3DImproved model
+
+Author: Benjamin Rose
+Date: 2025
+Project: 3D Improved U-Net (Prostate MRI Segmentation)
+"""
+
 import math
 import torch
 from torch import nn
@@ -7,8 +21,8 @@ import torch.nn.functional as F
 class DyReLU3d(nn.Module):
     """
     Dynamic ReLU (Dy-ReLU) for 3D tensors.
-    Generates per-channel piecewise-linear parameters conditioned on global context.
-    Implements K=2 linear pieces: y = max_k (a_k * x + b_k).
+    Learns per-channel piecewise-linear activation parameters from global context.
+    Uses K=2 segments: y = max_k(a_k * x + b_k).
     """
     def __init__(self, channels: int, reduction: int = 16, K: int = 2):
         super().__init__()
@@ -17,7 +31,8 @@ class DyReLU3d(nn.Module):
         hidden = max(channels // reduction, 4)
         self.pool = nn.AdaptiveAvgPool3d(1)
         self.fc1 = nn.Linear(channels, hidden)
-        self.fc2 = nn.Linear(hidden, 2 * K * channels)
+        self.fc2 = nn.Linear(hidden, 2 * K * channels)  # outputs [a1..aK, b1..bK]
+        # base parameters to stabilize training
         self.register_parameter("alpha", nn.Parameter(torch.ones(K)))
         self.register_parameter("beta", nn.Parameter(torch.zeros(K)))
         self.register_parameter("lambda_a", nn.Parameter(torch.tensor(0.5)))
@@ -31,6 +46,7 @@ class DyReLU3d(nn.Module):
         a, b = torch.split(params, self.K * self.C, dim=1)
         a = a.view(n, self.K, self.C, 1, 1, 1)
         b = b.view(n, self.K, self.C, 1, 1, 1)
+        # adjust around base alpha/beta
         a = self.alpha.view(1, self.K, 1, 1, 1, 1) + self.lambda_a * (a - 0.5)
         b = self.beta.view(1, self.K, 1, 1, 1, 1) + self.lambda_b * (b - 0.5)
         x_exp = x.unsqueeze(1)
@@ -56,7 +72,7 @@ class FRN3d(nn.Module):
 
 
 class ChannelAttention3d(nn.Module):
-    """CBAM Channel attention for 3D feature maps."""
+    """CBAM channel attention module for 3D inputs."""
     def __init__(self, channels: int, reduction: int = 8):
         super().__init__()
         hidden = max(channels // reduction, 4)
@@ -77,7 +93,7 @@ class ChannelAttention3d(nn.Module):
 
 
 class SpatialAttention3d(nn.Module):
-    """CBAM Spatial attention for 3D feature maps with 7x7x7 kernel."""
+    """CBAM spatial attention with a 3D conv filter."""
     def __init__(self, kernel_size: int = 7):
         super().__init__()
         pad = kernel_size // 2
@@ -91,7 +107,7 @@ class SpatialAttention3d(nn.Module):
 
 
 class CBAM3d(nn.Module):
-    """Convolutional Block Attention Module (channel -> spatial) for 3D tensors."""
+    """Full CBAM block: channel then spatial attention."""
     def __init__(self, channels: int, reduction: int = 8, spatial_kernel: int = 7):
         super().__init__()
         self.ca = ChannelAttention3d(channels, reduction=reduction)
@@ -104,23 +120,19 @@ class CBAM3d(nn.Module):
 
 
 class ImprovedResidualBlock3d(nn.Module):
-    """
-    Improved Stage Residual Block: FRN -> DyReLU -> 3x3 -> FRN -> DyReLU -> 3x3 with identity mapping.
-    Combines batch-independent FRN with the strong DyReLU activation.
-    """
+    """Residual block using DyReLU and BN layers with optional dropout."""
     def __init__(self, in_ch: int, out_ch: int, dropout_p: float = 0.0):
         super().__init__()
-        
-        self.norm1 = FRN3d(in_ch)
-        self.act1 = DyReLU3d(in_ch) 
-        self.conv1 = nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm3d(in_ch)
+        self.act1 = DyReLU3d(in_ch)
+        self.conv1 = nn.Conv3d(in_ch, out_ch, 3, padding=1, bias=False)
 
         self.norm2 = FRN3d(out_ch)
         self.act2 = DyReLU3d(out_ch)
-        self.conv2 = nn.Conv3d(out_ch, out_ch, kernel_size=3, padding=1, bias=False)
+        self.conv2 = nn.Conv3d(out_ch, out_ch, 3, padding=1, bias=False)
 
         self.drop = nn.Dropout3d(p=dropout_p) if dropout_p > 0 else nn.Identity()
-        self.proj = nn.Conv3d(in_ch, out_ch, kernel_size=1, bias=False) if in_ch != out_ch else nn.Identity()
+        self.proj = nn.Conv3d(in_ch, out_ch, 1, bias=False) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x):
         identity = self.proj(x)
@@ -134,11 +146,11 @@ class ImprovedResidualBlock3d(nn.Module):
 
 
 class DownStage3d(nn.Module):
-    """Encoder stage: improved residual block followed by 2x downsampling via max pooling."""
+    """Encoder stage: residual block followed by 2× downsampling."""
     def __init__(self, in_ch: int, out_ch: int, dropout_p: float = 0.0):
         super().__init__()
         self.block = ImprovedResidualBlock3d(in_ch, out_ch, dropout_p=dropout_p)
-        self.pool = nn.MaxPool3d(kernel_size=2, stride=2)
+        self.pool = nn.MaxPool3d(2, 2)
 
     def forward(self, x):
         feat = self.block(x)
@@ -147,16 +159,16 @@ class DownStage3d(nn.Module):
 
 
 class UpStage3d(nn.Module):
-    """Decoder stage: transposed conv upsample, CBAM on skip features, concatenate, improved residual block."""
+    """Decoder stage: upsample, CBAM on skip, concat, then residual block."""
     def __init__(self, in_ch: int, skip_ch: int, out_ch: int, dropout_p: float = 0.0, cbam_reduction: int = 8):
         super().__init__()
-        self.up = nn.ConvTranspose3d(in_ch, out_ch, kernel_size=2, stride=2, bias=False)
+        self.up = nn.ConvTranspose3d(in_ch, out_ch, 2, stride=2, bias=False)
         self.cbam = CBAM3d(skip_ch, reduction=cbam_reduction)
         self.block = ImprovedResidualBlock3d(out_ch + skip_ch, out_ch, dropout_p=dropout_p)
 
     def forward(self, x, skip):
         x = self.up(x)
-        # Pad upsampled feature map (x) to match skip connection size
+        # adjust for size mismatch
         dz = skip.size(2) - x.size(2)
         dy = skip.size(3) - x.size(3)
         dx = skip.size(4) - x.size(4)
@@ -171,41 +183,46 @@ class UpStage3d(nn.Module):
 
 class UNet3DImproved(nn.Module):
     """
-    IResUnet3+ 3D Architecture with FRN-DyReLU Residual Blocks.
+    Improved 3D U-Net with:
+    - DyReLU-based residual blocks
+    - CBAM attention on skip connections
+    - Encoder-decoder symmetry with bridge and 1×1 head
     """
     def __init__(self, in_channels: int = 1, num_classes: int = 6, base_ch: int = 16, depth: int = 4, dropout_p: float = 0.0):
         super().__init__()
         chs = [base_ch * (2 ** i) for i in range(depth)]
-        
+
+        # Encoder
         self.enc = nn.ModuleList()
         prev = in_channels
         for c in chs:
             self.enc.append(DownStage3d(prev, c, dropout_p=dropout_p))
             prev = c
 
+        # Bottleneck
         self.bridge = ImprovedResidualBlock3d(chs[-1], chs[-1] * 2, dropout_p=dropout_p)
-        
+
+        # Decoder
         dec = []
         in_ch = chs[-1] * 2
         for skip_c in reversed(chs):
-            out_c = skip_c
-            dec.append(UpStage3d(in_ch, skip_c, out_c, dropout_p=dropout_p))
-            in_ch = out_c
+            dec.append(UpStage3d(in_ch, skip_c, skip_c, dropout_p=dropout_p))
+            in_ch = skip_c
         self.dec = nn.ModuleList(dec)
-        
-        self.head = nn.Conv3d(chs[0], num_classes, kernel_size=1, bias=True)
+
+        # Classification head
+        self.head = nn.Conv3d(chs[0], num_classes, 1, bias=True)
 
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """Kaiming init for conv/linear layers, unit init for BN."""
         if isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
             nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-        elif isinstance(m, (FRN3d,)):
-            if m.weight is not None:
-                nn.init.ones_(m.weight)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
-        elif isinstance(m, (nn.Linear,)):
+        elif isinstance(m, nn.BatchNorm3d):
+            nn.init.ones_(m.weight)
+            nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.Linear):
             nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
             if m.bias is not None:
                 fan_in, _ = nn.init._calculate_fan_in_and_fan_out(m.weight)
@@ -213,6 +230,7 @@ class UNet3DImproved(nn.Module):
                 nn.init.uniform_(m.bias, -bound, bound)
     
     def forward(self, x):
+        """Forward pass through encoder, bridge, and decoder."""
         skips = []
         out = x
         
