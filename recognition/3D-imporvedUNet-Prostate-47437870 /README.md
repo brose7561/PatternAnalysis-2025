@@ -4,7 +4,13 @@
 
 ![](pictures/full_data_10_epochs.gif)
 
-> This report compares combining attention into a 3D UNet to hit a medium perfomace objective on a medical imaging set.
+> Segment the (downsampled) Prostate 3D data set  with the 3D Improved
+UNet3D [1] with all labels having a minimum Dice similarity coefficient of 0.7 on the test set. Use the appropriate augmentation
+transforms in PyTorch.
+
+[Hard Difficulty - 3D
+Improved UNet]
+
 
 # Overview 
 
@@ -18,11 +24,7 @@ The secondary aim is to evaluate whether the improvments were necessary to achie
 
 ### Method:
 
-The porject orrigionally extends a pytorch 2D U-Net into a 3D model. 
-
-Dynamic ReLU (Dy-ReLU) activations and CBAM attention were added to make an Imporved Unet Vairent. 
-
-A batch indepentant FRN TLU vairient was briefly tested.
+The porject orrigionally extends a pytorch 2D U-Net into a 3D model. Dynamic ReLU (Dy-ReLU) activations and CBAM attention were added to make an Imporved Unet Vairent. A batch indepentant FRN TLU vairient was briefly tested.
 
 
 ### Evaluation
@@ -44,26 +46,20 @@ Model performance was evaluated in two phases:
 
 ### Results:
 
-The 3D unet and the Final ImporvedUNet met the aim of ≥ 0.70 DSC accross all catagories. The ImporvedUNet performed slightly worse in both evaluation phases. Paticularly, in the stress test the Imporved UNet showed much higher scattering and lower DCS.
+The 3D unet and the Final ImporvedUNet met the aim of ≥ 0.70 DSC accross all catagories. The ImporvedUNet performed slightly worse in both evaluation phases. Paticularly, in the stress test the Imporved UNet showed much higher pixel scattering and lower DCS.
 
-If your aim is around 0.7-0.8 DSC this investigation suggests a standard 3D unet is simpler, and will meet the accuracy requirment. 
+Aiming around 0.7-0.8 DSC, this investigation suggests a standard 3D unet is recomended with this dataset.
 
 ### Extensions:
 
-To better validate the Improved 3D UNet's utillity over the Basis 3D UNet, a new research motivation of "maximising DSC" is proposed, with an aim to investigate larger trends accross longer training. 
+To better validate the Improved 3D UNet's utillity over the Basis 3D UNet, a new research motivation of "maximising DSC" is proposed. Aim to investigate larger trends accross longer training. 
 
-Stress testing the model under real-world constraints such as limited compute and small datasets became a key evaluation strategy in this project. However, the broader utility of these results remains unclear. A project extension to explore stress testing as a model evaluation approach, fro instance using it to predict performance plateau. 
+Stress testing the model under real-world constraints such as limited compute and small datasets became a key evaluation strategy in this project. However, the broader utility of these results remains unclear. A project extension to explore stress testing as a model evaluation approach. For instance, using it to predict overall performance plateau. 
 
 # method
 
 The baseline builds on the canonical 2D U-Net—contracting/expanding paths with skip connections—introduced by Ronneberger et al. ([U-Net, 2015](https://arxiv.org/abs/1505.04597)). I then ported the design to volumes in the spirit of 3D U-Net by replacing all 2D ops with their 3D counterparts ([Çiçek et al., 2016](https://arxiv.org/abs/1606.06650)). For training on class-imbalanced medical data, I combined cross-entropy with a soft-Dice term influenced by V-Net’s Dice loss ([Milletari et al., 2016](https://arxiv.org/abs/1606.04797)). Given tiny effective batch sizes in 3D, I used InstanceNorm3d instead of BatchNorm for more stable statistics ([Ulyanov et al., 2016](https://arxiv.org/abs/1607.08022)). ([arXiv][1]).
 
-
-Here’s a complete dot-point version that keeps your tone and includes both **architectural** and **training** choices:
-
----
-
-Got it — here’s a **refined, accurate, and simplified** description of the **Original 3D U-Net**, directly aligned with how your actual implementation works:
 
 ---
 
@@ -98,8 +94,6 @@ Got it — here’s a **refined, accurate, and simplified** description of the *
 
 From this succuess, added residual pre-activation blocks ([ResNet, 2015](https://arxiv.org/abs/1512.03385)), swapped the static ReLU for Dynamic ReLU ([DyReLU, 2020](https://arxiv.org/abs/2003.10027)), and injected CBAM attention on skip features (channel → spatial) ([CBAM, 2018](https://arxiv.org/abs/1807.06521)). Concretely, each improved stage uses `BatchNorm3d → DyReLU3d → Conv3d` ×2 with an identity shortcut; BN pairs well with residual learning, while InstanceNorm3d remains a drop-in fallback.
 
-Here’s the matching improved version written in the same concise, dot-point style as the original:
-
 ---
 
 ## Improved UNet3D
@@ -113,6 +107,11 @@ Here’s the matching improved version written in the same concise, dot-point st
 ## Dataset
 
 This project used the ProstateX 3D MRI dataset from the [CSIRO Data Portal](https://data.csiro.au/collection/csiro:51392v2?redirected=true). The dataset contains labelled weekly MR volumes of the male pelvis, with each case including T2-weighted scans and corresponding segmentation masks.
+
+### Data Splits & Reproducibility
+
+* **Default splits:** `train/val/test = 80% / 10% / 10%` (standard)
+* **Deterministic split** via `torch.Generator().manual_seed(args.seed)`
 
 
 
@@ -139,7 +138,7 @@ pictures/      # figures and GIFs used in this README
 
 Stress testing was done on 7 - 3D pelvis scans for 5 epochs training locally (Mac M1 cpu only). Training took approx 10mins. 
 
-> Originally, local stress tests were just for debugging. But since the standard 3D U-Net could hit a DSC above 0.7 with the full dataset these small-scale tests became a quick way to gauge performance. 
+> Originally, local stress tests were just for debugging. But since the standard 3D U-Net could hit a DSC above 0.7 with the full dataset these small-scale tests actally show vairations in achetecture more than the fully trained versions. 
 
 
 ### **Base 3D U-Net (Stress Test)**
@@ -287,14 +286,7 @@ pred_outputs/test_volume_pred.nii.gz    # predicted labelmap
   * Random flips on each axis (p = 0.5)
   * Random 90° rotations on random axis pair (p ≈ 0.5)
 
-> These augmentations are chosen to be label-preserving and memory-light, in line with the task’s focus on a strong, simple baseline.
-
----
-
-## Data Splits & Reproducibility
-
-* **Default splits:** `train/val/test = 80% / 10% / 10%` (rounded)
-* **Deterministic split** via `torch.Generator().manual_seed(args.seed)`
+> These augmentations are chosen to be label-preserving and memory-light. Implemented with pytorch transforms. 
 
 
   
