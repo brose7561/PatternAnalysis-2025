@@ -6,10 +6,12 @@
 
 > Segment the (downsampled) Prostate 3D data set  with the 3D Improved
 UNet3D [1] with all labels having a minimum Dice similarity coefficient of 0.7 on the test set. Use the appropriate augmentation
-transforms in PyTorch.
-
-[Hard Difficulty - 3D
+transforms in PyTorch. [Hard Difficulty - 3D
 Improved UNet]
+
+
+
+See [base custom 3D U-Net](https://github.com/brose7561/PatternAnalysis-2025/tree/base-3D-UNet/recognition/3D-UNet-Prostate-47437870) for the original implementation.
 
 
 # Overview 
@@ -61,10 +63,14 @@ Stress testing the model under real-world constraints such as limited compute an
 The baseline builds on the canonical 2D U-Net—contracting/expanding paths with skip connections—introduced by Ronneberger et al. ([U-Net, 2015](https://arxiv.org/abs/1505.04597)). I then ported the design to volumes in the spirit of 3D U-Net by replacing all 2D ops with their 3D counterparts ([Çiçek et al., 2016](https://arxiv.org/abs/1606.06650)). For training on class-imbalanced medical data, I combined cross-entropy with a soft-Dice term influenced by V-Net’s Dice loss ([Milletari et al., 2016](https://arxiv.org/abs/1606.04797)). Given tiny effective batch sizes in 3D, I used InstanceNorm3d instead of BatchNorm for more stable statistics ([Ulyanov et al., 2016](https://arxiv.org/abs/1607.08022)). ([arXiv][1]).
 
 
+
+
 ---
 
 ## Original 3D U-Net
 
+https://github.com/brose7561/PatternAnalysis-2025/tree/base-3D-UNet
+ 
 * **Architecture:** Four-level 3D encoder–decoder with skip connections for voxel-wise prostate segmentation.
 * **Convolutions:** Two `3×3×3` convolutions per block for local spatial context.
 * **Normalization:** `InstanceNorm3d` for batch-independent stability (batch size = 1).
