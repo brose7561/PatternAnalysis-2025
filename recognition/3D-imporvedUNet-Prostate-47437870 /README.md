@@ -22,31 +22,10 @@ This repository trains and evaluates an **Improved UNet3D** for 3D prostate MRI 
 * **Attention:** **CBAM3d** (channel then spatial attention) applied to **skip features** before decoding.
 * **Head:** 1×1×1 conv to class logits.
 * **Loss:** Combined **Cross-Entropy + soft Dice**.
-* **Metrics:** Per-class Dice and mean Dice (excluding background).
+* **Metrics:** Per-class Dice and mean Dice (excluding dominant background voxels).
 * **I/O:** NIfTI volumes (`.nii/.nii.gz`) with z-score normalization; labels are nearest-neighbor resized.
 
----
 
-## Model Architecture (Key Ideas)
-
-### 1) Dy-ReLU for 3D
-
-We use a per-channel, input-conditioned activation (**K=2** piecewise linear units) to increase representational capacity without large compute overhead. It generates `(a_k, b_k)` from the global pooled feature and computes `max_k(a_k·x + b_k)`.
-
-Reference: **Dynamic ReLU** (PMCID: **PMC8793173**) — discusses stability issues from inconsistent mini-batch statistics and motivation for trainable, input-adaptive activations. Less noise more training needed. 
-
-### 2) CBAM3d on Skips
-
-**Channel + Spatial attention** (3D) enhances informative skip features **before** concatenation with the upsampled decoder signal, improving boundary detail and suppressing noise.
-
-### 3) Residual Stages
-
-Each stage uses **residual connections** to ease optimization and help gradients flow in deeper 3D stacks.
-
-> **Small-batch stability note.** 3D segmentation often runs at **batch size = 1** due to memory limits. This can make **BatchNorm** statistics noisy and cause “salt-and-pepper” pixel scatter in early training (as observed locally). Two mitigations used here:
->
-> * Adopt **Dy-ReLU** (trainable, input-conditioned) to soften dependence on batch statistics.
-> * (Optional variant) **Filter Response Normalization (FRN)** + **TLU** can fully remove batch dependence. We kept `BatchNorm3d` in the final model but almost stuck with the above when test training locally with small batches. 
 ---
 
 ## Repository Layout
@@ -70,7 +49,7 @@ pictures/      # figures and GIFs used in this README
 
 7 scans for 5 epochs. 
 
-**Local test -— note scatter:**
+**Local test — note scatter:**
 ![](pictures/first_Local.gif)
 
 The scatter was not present when using the orrigional unet in the same conditions. 
@@ -78,7 +57,8 @@ The scatter was not present when using the orrigional unet in the same condition
 **Local test with FRN TLU (batch-independent norm) :**
 ![](pictures/local_RFN_remove_batch.gif)
 
-Worried about the scatter i branched out and used FRN and TLU after finding similar projects reporting scattered results in small batch sizes. The scatter reduced a lot, however so did the mean dice scores.  
+Worried about the scatter, I branched out and used FRN and TLU after finding and reading [Improved U-Net3+ with Stage Residual for Brain Tumor Segmentation](https://pmc.ncbi.nlm.nih.gov/articles/PMC8793173/) and their issues with small batch sizes. The scatter reduced a lot, however so did the mean Dice scores.
+
 
 **Full-data cluster run (10 epochs) — qualitative convergence:**
 ![](pictures/full_data_10_epochs.gif)
@@ -135,8 +115,7 @@ python train.py \
   --num_workers <int> \
   --num_classes <int> \
   --ignore_index <int> \
-  --outdir runs_improved_unet3d \
-  --augment            # optional: enable simple flips/rot90
+  --outdir runs_improved_unet3d 
 ```
 #### running UQ Rangpur is default just run:
 ```bash
@@ -158,7 +137,7 @@ runs_improved_unet3d/best.pt
 ```bash
 python predict.py \
   --image_path /path/to/test_volume.nii.gz \
-  --label_path /path/to/test_label.nii.gz \   # optional, enables per-class Dice
+  --label_path /path/to/test_label.nii.gz \   
   --checkpoint runs_improved_unet3d/best.pt \
   --num_classes <int> \
   --ignore_index <int> \
@@ -180,7 +159,7 @@ python predict.py \
 #### This writes:
 
 ```
-pred_outputs/test_volume_triptych.gif   # image | prediction | (optional) label
+pred_outputs/test_volume_triptych.gif   # image | prediction | label
 pred_outputs/test_volume_pred.nii.gz    # predicted labelmap
 ```
 
@@ -211,12 +190,9 @@ x' = \frac{x - \mu}{\sigma + 1e!-!8}
 
 * **Default splits:** `train/val/test = 80% / 10% / 10%` (rounded)
 * **Deterministic split** via `torch.Generator().manual_seed(args.seed)`
-* **Justification:**
+* **Ref:**
 
-  * 10% validation is sufficient to guide early stopping and LR scheduling without starving training.
-  * 10% hold-out test is adequate to verify the **≥ 0.70 DSC** requirement while preserving most data for fitting.
-  * Fixed seed ensures repeatable pairing/shuffling and consistent comparisons across runs.
-
+  
 ---
 
 ## Training Choices & Rationale
